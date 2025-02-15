@@ -8,26 +8,41 @@ import (
 	"os/signal"
 	"time"
 
-	"go_ping/pkg/go_ping"
+	ping "go_ping/pkg/go_ping"
 )
 
 func main() {
 	var (
-		count      = flag.Int("c", 0, "Number of packets to send")
-		interval   = flag.Duration("i", time.Second, "Interval between packets")
-		timeout    = flag.Duration("t", time.Millisecond*100, "Timeout waiting for response")
-		privileged = flag.Bool("privileged", false, "Use privileged mode")
+		count    = flag.Int("c", 0, "Number of packets to send")
+		interval = flag.Duration("i", time.Second, "Interval between packets")
+		timeout  = flag.Duration("t", time.Millisecond*100, "Timeout waiting for response")
+		flood    = flag.Bool("f", false, "Flood ping (super-user only)")
 	)
 
 	flag.Parse()
 	target := flag.Arg(0)
+	intervalFlag := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "i" {
+			intervalFlag = true
+		}
+	})
 
 	if target == "" {
 		fmt.Println("Error: target is required")
 		os.Exit(1)
 	}
 
-	pinger, err := ping.NewPinger(target, *privileged)
+	if os.Getuid() != 0 {
+		fmt.Println("Error: ping requires root privileges")
+		os.Exit(1)
+	}
+
+	if *flood && !intervalFlag {
+		*interval = 0
+	}
+
+	pinger, err := ping.NewPinger(target)
 	if err != nil {
 		log.Fatalf("Error creating pinger: %v", err)
 	}
@@ -46,9 +61,16 @@ func main() {
 		pinger.Stop()
 	}()
 
-	pinger.OnRecv = func(pkt *ping.Packet) {
-		fmt.Printf("%d bytes from %s: icmp_seq=%d time=%v\n",
-			pkt.NBytes, pkt.IPAddr, pkt.Seq, pkt.Rtt)
+	if *flood {
+		pinger.SetFloodMode(true)
+		pinger.OnRecv = func(pkt *ping.Packet) {
+			fmt.Print("\b")
+		}
+	} else {
+		pinger.OnRecv = func(pkt *ping.Packet) {
+			fmt.Printf("%d bytes from %s: icmp_seq=%d time=%v\n",
+				pkt.NBytes, pkt.IPAddr, pkt.Seq, pkt.Rtt)
+		}
 	}
 
 	pinger.OnFinish = func(stats *ping.Statistics) {

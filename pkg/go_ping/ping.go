@@ -1,6 +1,7 @@
 package ping
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"sync"
@@ -17,13 +18,15 @@ type Pinger struct {
 	interval   time.Duration
 	timeout    time.Duration
 	count      int
-	privileged bool
+	floodMode  bool
 	sequence   int
 	conn       *icmp.PacketConn
 	done       chan bool
 	OnRecv     func(*Packet)
 	OnFinish   func(*Statistics)
 	Stats      Statistics
+	sendChan   chan struct{}
+	recvChan   chan struct{}
 }
 
 type Packet struct {
@@ -43,7 +46,7 @@ type Statistics struct {
 	AvgRtt      time.Duration
 }
 
-func NewPinger(addr string, privileged bool) (*Pinger, error) {
+func NewPinger(addr string) (*Pinger, error) {
 	ipAddr, err := net.ResolveIPAddr("ip", addr)
 	if err != nil {
 		return nil, err
@@ -52,7 +55,6 @@ func NewPinger(addr string, privileged bool) (*Pinger, error) {
 	return &Pinger{
 		addr:       addr,
 		ipAddr:     ipAddr,
-		privileged: privileged,
 		interval:   time.Second,
 		timeout:    time.Second * 5,
 		count:      -1, // infinite
@@ -103,8 +105,18 @@ func (p *Pinger) network() string {
 	return "ip6:ipv6-icmp"
 }
 
+func (p *Pinger) calculatePacketLoss() {
+	if p.Stats.PacketsSent > 0 {
+		p.Stats.PacketLoss = float64(p.Stats.PacketsSent-p.Stats.PacketsRecv) / float64(p.Stats.PacketsSent) * 100
+	}
+}
+
 func (p *Pinger) sendICMP() error {
 	icmpType := getICMPType(p.ipAddr)
+
+	if p.floodMode {
+		return p.sendICMPFlood(icmpType)
+	}
 
 	for {
 		select {
@@ -150,6 +162,56 @@ func (p *Pinger) sendICMP() error {
 	}
 }
 
+func (p *Pinger) sendICMPFlood(icmpType icmp.Type) error {
+	for {
+		select {
+		case <-p.done:
+			return nil
+		default:
+			if p.count == 0 {
+				p.Stop()
+				return nil
+			}
+
+			msg := icmp.Message{
+				Type: icmpType,
+				Code: 0,
+				Body: &icmp.Echo{
+					ID:   os.Getegid() & 0xffff,
+					Seq:  p.sequence,
+					Data: append(timeToBytes(time.Now()), make([]byte, 56)...),
+				},
+			}
+
+			wb, err := msg.Marshal(nil)
+			if err != nil {
+				return err
+			}
+
+			checksum := calculateChecksum(wb)
+			wb[2] = byte(checksum >> 8)
+			wb[3] = byte(checksum & 0xff)
+
+			fmt.Print(".")
+			if _, err := p.conn.WriteTo(wb, p.ipAddr); err != nil {
+				return err
+			}
+
+			p.sequence++
+			p.Stats.PacketsSent++
+			if p.count > 0 {
+				p.count--
+			}
+
+			if p.interval > 0 {
+				time.Sleep(p.interval)
+			} else {
+				time.Sleep(time.Second / 1000)
+			}
+		}
+	}
+}
+
 func (p *Pinger) recvICMP(wg *sync.WaitGroup) {
 	defer wg.Done()
 
@@ -157,6 +219,7 @@ func (p *Pinger) recvICMP(wg *sync.WaitGroup) {
 		select {
 		case <-p.done:
 			if p.OnFinish != nil {
+				p.calculatePacketLoss()
 				p.OnFinish(&p.Stats)
 			}
 			return
@@ -222,6 +285,14 @@ func (p *Pinger) SetTimeout(timeout time.Duration) {
 
 func (p *Pinger) SetCount(count int) {
 	p.count = count
+}
+
+func (p *Pinger) SetFloodMode(enabled bool) {
+	p.floodMode = enabled
+	if enabled {
+		p.sendChan = make(chan struct{}, 100)
+		p.recvChan = make(chan struct{}, 100)
+	}
 }
 
 // Getters
