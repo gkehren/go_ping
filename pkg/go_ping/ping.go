@@ -13,20 +13,18 @@ import (
 )
 
 type Pinger struct {
-	addr       string
-	ipAddr     *net.IPAddr
-	interval   time.Duration
-	timeout    time.Duration
-	count      int
-	floodMode  bool
-	sequence   int
-	conn       *icmp.PacketConn
-	done       chan bool
-	OnRecv     func(*Packet)
-	OnFinish   func(*Statistics)
-	Stats      Statistics
-	sendChan   chan struct{}
-	recvChan   chan struct{}
+	addr      string
+	ipAddr    *net.IPAddr
+	interval  time.Duration
+	timeout   time.Duration
+	count     int
+	floodMode bool
+	sequence  int
+	conn      *icmp.PacketConn
+	done      chan bool
+	OnRecv    func(*Packet)
+	OnFinish  func(*Statistics)
+	Stats     Statistics
 }
 
 type Packet struct {
@@ -53,12 +51,12 @@ func NewPinger(addr string) (*Pinger, error) {
 	}
 
 	return &Pinger{
-		addr:       addr,
-		ipAddr:     ipAddr,
-		interval:   time.Second,
-		timeout:    time.Second * 5,
-		count:      -1, // infinite
-		done:       make(chan bool),
+		addr:     addr,
+		ipAddr:   ipAddr,
+		interval: time.Second,
+		timeout:  time.Second * 5,
+		count:    -1, // infinite
+		done:     make(chan bool),
 	}, nil
 }
 
@@ -289,10 +287,6 @@ func (p *Pinger) SetCount(count int) {
 
 func (p *Pinger) SetFloodMode(enabled bool) {
 	p.floodMode = enabled
-	if enabled {
-		p.sendChan = make(chan struct{}, 100)
-		p.recvChan = make(chan struct{}, 100)
-	}
 }
 
 // Getters
